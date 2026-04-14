@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data and large files
+*.nii
+*.nii.gz
+*.npy
+*.npz
+*.pt
+*.pth
+*.pkl
+*.pickle
+
+# Output and results
+output/
+FBP_res/
+SimPhantom/data/
+
+# OS generated files
+.DS_Store
+Thumbs.db
