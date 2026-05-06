@@ -22,16 +22,18 @@ def tv_3d_loss(vol, reduction="sum"):
     dy = torch.abs(torch.diff(vol, dim=1))
     dz = torch.abs(torch.diff(vol, dim=2))
 
-    tv = torch.sum(dx) + torch.sum(dy) + torch.sum(dz)
+    tv_xy = torch.sum(dx) + torch.sum(dy)
+    tv_z = torch.sum(dz)
 
     if reduction == "mean":
-        total_elements = (
+        total_elements_xy = (
             (vol.shape[0] - 1) * vol.shape[1] * vol.shape[2]
             + vol.shape[0] * (vol.shape[1] - 1) * vol.shape[2]
-            + vol.shape[0] * vol.shape[1] * (vol.shape[2] - 1)
         )
-        tv = tv / total_elements
-    return tv
+        total_elements_z = vol.shape[0] * vol.shape[1] * (vol.shape[2] - 1)
+        tv_xy = tv_xy / total_elements_xy
+        tv_z = tv_z / total_elements_z
+    return tv_xy, tv_z
 
 
 def l1_loss(network_output, gt):

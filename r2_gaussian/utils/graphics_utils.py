@@ -92,7 +92,7 @@ def getWorld2View2(R, t, translate=np.array([0.0, 0.0, 0.0]), scale=1.0):
     return np.float32(Rt)
 
 
-def getProjectionMatrix(fovX, fovY, mode, scanner_cfg):
+def getProjectionMatrix(fovX, fovY, mode, scanner_cfg, trans_y=0.0):
     if mode == 0:  # Parallel beam
         # sVoxel = scanner_cfg["sVoxel"][0]  # Assume cube only!
         # sVoxel_half = sVoxel / 2
@@ -132,15 +132,24 @@ def getProjectionMatrix(fovX, fovY, mode, scanner_cfg):
 
         P[0, 0] = 2.0 * znear / (right - left)
         P[1, 1] = 2.0 * znear / (top - bottom)
+
+
+        if scanner_cfg is not None and "sDetector" in scanner_cfg:
+            s_detector_h = scanner_cfg["sDetector"][0]
+            shift_y_ndc = trans_y  / (s_detector_h / 2.0)
+        else:
+            shift_y_ndc = 0.0
+            
         P[0, 2] = (right + left) / (right - left)
-        P[1, 2] = (top + bottom) / (top - bottom)
+
+        P[1, 2] = shift_y_ndc 
+
         P[3, 2] = z_sign
         P[2, 2] = z_sign * zfar / (zfar - znear)
         P[2, 3] = -(zfar * znear) / (zfar - znear)
     else:
         raise ValueError("Unsupported mode!")
     return P
-
 
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))

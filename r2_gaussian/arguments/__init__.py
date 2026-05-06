@@ -59,6 +59,7 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr_max_steps = 30_000
         self.lambda_dssim = 0.25
         self.lambda_tv = 0.05
+        self.lambda_scale_z = 0.05
         self.tv_vol_size = 32
         self.density_min_threshold = 0.00001
         self.densification_interval = 100

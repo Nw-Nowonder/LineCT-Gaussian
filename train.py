@@ -31,6 +31,46 @@ from r2_gaussian.utils.image_utils import metric_vol, metric_proj
 from r2_gaussian.utils.plot_utils import show_two_slice
 
 
+def calibrated_render(viewpoint_cam, gaussians, pipe, scanner_cfg):
+    """
+    Linear CT calibration: the X-ray source translates but the detector is stationary.
+    To render this correctly without tilting the image plane, we use an off-axis 
+    frustum by shifting the principal point in the projection matrix.
+    """
+    if scanner_cfg.get("mode") == "cone":
+        # T[0] contains -trans_x (the negative of translation along Y-axis)
+        trans_x = -viewpoint_cam.T[0].item()
+        DSD = scanner_cfg.get("DSD", 1000.0)
+        
+        # Clone the original transposed projection matrix
+        calib_proj = viewpoint_cam.projection_matrix.clone()
+        P00 = calib_proj[0, 0].item()
+        
+        # Add offset to P[0,2] (which is [2,0] in the transposed matrix)
+        calib_proj[2, 0] = P00 * trans_x / DSD
+        
+        calib_full_proj = viewpoint_cam.world_view_transform.unsqueeze(0).bmm(
+            calib_proj.unsqueeze(0)
+        ).squeeze(0)
+        
+        # Temporarily replace matrices for rendering
+        orig_proj = viewpoint_cam.projection_matrix
+        orig_full = viewpoint_cam.full_proj_transform
+        
+        viewpoint_cam.projection_matrix = calib_proj
+        viewpoint_cam.full_proj_transform = calib_full_proj
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe)
+        
+        # Restore original matrices
+        viewpoint_cam.projection_matrix = orig_proj
+        viewpoint_cam.full_proj_transform = orig_full
+        
+        return render_pkg
+    else:
+        return render(viewpoint_cam, gaussians, pipe)
+
+
 def training(
     dataset: ModelParams,
     opt: OptimizationParams,
@@ -73,7 +113,7 @@ def training(
     scene.gaussians = gaussians
     gaussians.training_setup(opt)
     if checkpoint is not None:
-        (model_params, first_iter) = torch.load(checkpoint)
+        (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
         print(f"Load checkpoint {osp.basename(checkpoint)}.")
 
@@ -100,60 +140,87 @@ def training(
         # Update learning rate
         gaussians.update_learning_rate(iteration)
 
-        # Get one camera for training
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        # SART-like Batch Accumulation to prevent ART oscillation
+        batch_size = 8
+        loss_dict_avg = {"render": 0.0, "total": 0.0}
+        
+        viewspace_points_list = []
+        visibility_filter_list = []
+        radii_list = []
 
-        # Render X-ray projection
-        render_pkg = render(viewpoint_cam, gaussians, pipe)
-        image, viewspace_point_tensor, visibility_filter, radii = (
-            render_pkg["render"],
-            render_pkg["viewspace_points"],
-            render_pkg["visibility_filter"],
-            render_pkg["radii"],
-        )
+        for b_idx in range(batch_size):
+            # Get one camera for training
+            if not viewpoint_stack:
+                viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-        # Compute loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        loss = {"total": 0.0}
-        render_loss = l1_loss(image, gt_image)
-        loss["render"] = render_loss
-        loss["total"] += loss["render"]
-        if opt.lambda_dssim > 0:
-            loss_dssim = 1.0 - ssim(image, gt_image)
-            loss["dssim"] = loss_dssim
-            loss["total"] = loss["total"] + opt.lambda_dssim * loss_dssim
-        # 3D TV loss
-        if use_tv:
-            # Randomly get the tiny volume center
-            tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
-                bbox[1] - tv_vol_sVoxel - bbox[0]
-            ) * torch.rand(3)
-            vol_pred = query(
-                gaussians,
-                tv_vol_center,
-                tv_vol_nVoxel,
-                tv_vol_sVoxel,
-                pipe,
-            )["vol"]
-            loss_tv = tv_3d_loss(vol_pred, reduction="mean")
-            loss["tv"] = loss_tv
-            loss["total"] = loss["total"] + opt.lambda_tv * loss_tv     
+            if iteration == first_iter: 
+                gauss_center = gaussians.get_xyz.mean(dim=0)
+                print(f"\n[DEBUG] Gaussian Center: {gauss_center.detach().cpu().numpy()}")
+                
+                cam_center = viewpoint_cam.camera_center
+                if hasattr(cam_center, "detach"):
+                    print(f"[DEBUG] Camera Center:   {cam_center.detach().cpu().numpy()}")
+                else:
+                    print(f"[DEBUG] Camera Center:   {cam_center}")
+                
+                cam_forward = viewpoint_cam.R[:, 2] 
+                print(f"[DEBUG] Camera Forward:  {cam_forward}\n")
+                print(f"[DEBUG] FOV X: {viewpoint_cam.FoVx}")
+                print(f"[DEBUG] FOV Y: {viewpoint_cam.FoVy}")
+                print(f"[DEBUG] Image Size: {viewpoint_cam.image_width} x {viewpoint_cam.image_height}")
+                print(f"[DEBUG] Projection Matrix:\n{viewpoint_cam.projection_matrix}")
+
+            # Render X-ray projection with linear CT calibration
+#            render_pkg = calibrated_render(viewpoint_cam, gaussians, pipe, scanner_cfg)
+            render_pkg = render(viewpoint_cam, gaussians, pipe)
+            image, viewspace_point_tensor, visibility_filter, radii = (
+                render_pkg["render"],
+                render_pkg["viewspace_points"],
+                render_pkg["visibility_filter"],
+                render_pkg["radii"],
+            )
+
+            # Compute Render Loss
+            gt_image = viewpoint_cam.original_image.cuda()
+            render_loss = l1_loss(image, gt_image)
             
-            # we need to add z-axis loss & delete z-axis tv loss from total tv loss.aiming to avoid over-smoothing along z-axis which is the depth direction and already has strong regularization from the rendering loss.
+            # Scale Render Loss by batch_size for correct gradient averaging
+            loss_total_scaled = render_loss / batch_size
             
-        loss["total"].backward()
+            if opt.lambda_dssim > 0:
+                loss_dssim = 1.0 - ssim(image, gt_image)
+                loss_total_scaled += (opt.lambda_dssim * loss_dssim) / batch_size
+
+            # Accumulate gradients
+            loss_total_scaled.backward()
+            
+            # Accumulate stats for logging
+            loss_dict_avg["render"] += render_loss.item() / batch_size
+            loss_dict_avg["total"] += loss_total_scaled.item()
+            
+            viewspace_points_list.append(viewspace_point_tensor)
+            visibility_filter_list.append(visibility_filter)
+            radii_list.append(radii)
+
+        # Re-assign averaged loss for logging
+        loss = loss_dict_avg
 
         iter_end.record()
         torch.cuda.synchronize()
 
         with torch.no_grad():
-            # Adaptive control
-            gaussians.max_radii2D[visibility_filter] = torch.max(
-                gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
-            )
-            gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            # Adaptive control for all views in the batch
+            for b_idx in range(batch_size):
+                vpt = viewspace_points_list[b_idx]
+                vis = visibility_filter_list[b_idx]
+                rad = radii_list[b_idx]
+                
+                gaussians.max_radii2D[vis] = torch.max(
+                    gaussians.max_radii2D[vis], rad[vis]
+                )
+                gaussians.add_densification_stats(vpt, vis)
+                
             if iteration < opt.densify_until_iter:
                 if (
                     iteration > opt.densify_from_iter
@@ -195,7 +262,7 @@ def training(
             if iteration % 10 == 0:
                 progress_bar.set_postfix(
                     {
-                        "loss": f"{loss['total'].item():.1e}",
+                        "loss": f"{loss['total']:.1e}",
                         "pts": f"{gaussians.get_density.shape[0]:2.1e}",
                     }
                 )
@@ -206,7 +273,7 @@ def training(
             # Logging
             metrics = {}
             for l in loss:
-                metrics["loss_" + l] = loss[l].item()
+                metrics["loss_" + l] = loss[l]
             for param_group in gaussians.optimizer.param_groups:
                 metrics[f"lr_{param_group['name']}"] = param_group["lr"]
             training_report(
@@ -216,6 +283,7 @@ def training(
                 iter_start.elapsed_time(iter_end),
                 testing_iterations,
                 scene,
+#                lambda x, y: calibrated_render(x, y, pipe, scene.scanner_cfg),
                 lambda x, y: render(x, y, pipe),
                 queryfunc,
             )
@@ -381,6 +449,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+    args.checkpoint_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)
     args.test_iterations.append(1)
     # fmt: on

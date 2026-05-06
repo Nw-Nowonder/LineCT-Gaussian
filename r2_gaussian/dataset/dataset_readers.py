@@ -114,9 +114,9 @@ def readCTameras(meta_data, source_path, eval=False, scene_scale=1.0):
             sys.stdout.flush()
 
             frame_info = meta_data["proj_" + split][i_split]
-            frame_trans_x = frame_info["translation_x"] * scene_scale
+            frame_trans_y = frame_info["translation_y"] * scene_scale
 
-            c2w = trans2pose(cam_cfg["DSO"], frame_trans_x)  # c2w
+            c2w = trans2pose(cam_cfg["DSO"], frame_trans_y)  # c2w
             # get the world-to-camera transform and set R, T
             w2c = np.linalg.inv(c2w)
             R = np.transpose(
@@ -189,13 +189,12 @@ def angle2pose(DSO, angle):
 
     return transform
 
-def trans2pose(DSO, trans_x):
+def trans2pose(DSO, trans_y):
     """
     Transfer linear translation to pose (c2w) based on scanner geometry.
     For linear CT, the orientation is fixed (same as angle=0 in circular CT),
     and the source translates parallel to the detector.
     """
-    # 保持与原代码完全一致的基础旋转，确保相机朝向坐标系原点 (X轴负方向)
     phi1 = -np.pi / 2
     R1 = np.array(
         [
@@ -213,11 +212,9 @@ def trans2pose(DSO, trans_x):
         ]
     )
     
-    # 因为是线性平移，所以没有 R3 (无需绕 Z 轴旋转)
     rot = np.dot(R2, R1)
     
-    # 射线源固定在 X=DSO 的平面上，沿 Y 轴进行线性平移
-    trans = np.array([DSO, trans_x, 0.0])
+    trans = np.array([DSO, 0.0, -trans_y])
     
     transform = np.eye(4)
     transform[:3, :3] = rot

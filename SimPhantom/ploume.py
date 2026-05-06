@@ -4,8 +4,8 @@ import numpy as np
 import pyvista as pv
 
 # Path to *.npy volume file
-volume_path = "./output/88baa6b8-7/point_cloud/iteration_30000/vol_pred.npy"
-# volume_path = "./SimPhantom/data/vol_gt.npy"
+# olume_path = "./output/test1/point_cloud/iteration_30000/vol_pred.npy"
+volume_path = "./SimPhantom/data/vol_gt.npy"
 
 save_path = "./volume.png"
 
@@ -20,7 +20,7 @@ colormap = "viridis"
 
 volume = np.load(volume_path)
 half_size = volume.shape[0] // 2
-# volume[:half_size, :, :] = 0  # Set half to zero to show the inner structure
+volume[:half_size, :, :] = 0  # Set half to zero to show the inner structure
 clim = [0.0, 1.0]
 
 plotter = pv.Plotter(window_size=window_size, line_smoothing=True, off_screen=False)

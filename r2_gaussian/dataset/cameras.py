@@ -66,12 +66,15 @@ class Camera(nn.Module):
         self.world_view_transform = (
             torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         )
+        current_trans_y = -T[1].item() if mode == 1 else 0.0
+
         self.projection_matrix = (
             getProjectionMatrix(
                 fovX=self.FoVx,
                 fovY=self.FoVy,
                 mode=mode,
                 scanner_cfg=scanner_cfg,
+                trans_y=current_trans_y
             )
             .transpose(0, 1)
             .cuda()
