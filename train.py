@@ -80,6 +80,7 @@ def training(
     saving_iterations,
     checkpoint_iterations,
     checkpoint,
+    batch_size,
 ):
     first_iter = 0
 
@@ -141,7 +142,6 @@ def training(
         gaussians.update_learning_rate(iteration)
 
         # SART-like Batch Accumulation to prevent ART oscillation
-        batch_size = 8
         loss_dict_avg = {"render": 0.0, "total": 0.0}
         
         viewspace_points_list = []
@@ -447,6 +447,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--batch_size", type=int, default=8, help="Number of images to accumulate gradients over before updating")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     args.checkpoint_iterations.append(args.iterations)
@@ -480,6 +481,7 @@ if __name__ == "__main__":
         args.save_iterations,
         args.checkpoint_iterations,
         args.start_checkpoint,
+        args.batch_size,
     )
 
     # All done
